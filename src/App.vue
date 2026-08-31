@@ -11,6 +11,8 @@ const alternatives = ref([]);
 const reviewRecommended = ref(false);
 const errorMessage = ref("");
 const isTranslating = ref(false);
+const statusMessage = ref("");
+const downloadProgress = ref(null);
 const isDialectMenuOpen = ref(false);
 
 const dialectGroups = [
@@ -157,7 +159,7 @@ const sourceLabel = computed(() => {
     validated_translation_memory:
       "Validated translation memory",
     marian_model_fallback:
-      "Marian model fallback",
+      "Marian browser model",
     prototype_demo:
       "Prototype sample"
   };
@@ -172,6 +174,8 @@ function clearResultState() {
   alternatives.value = [];
   reviewRecommended.value = false;
   errorMessage.value = "";
+  statusMessage.value = "";
+  downloadProgress.value = null;
 }
 
 function handleDialectChange() {
@@ -186,6 +190,8 @@ function chooseDialect(value) {
 }
 
 function swapDirection() {
+  if (isTranslating.value) return;
+
   isDialectMenuOpen.value = false;
 
   direction.value = isEnglishToBikol.value
@@ -209,11 +215,26 @@ async function handleTranslate() {
 
   clearResultState();
 
+  statusMessage.value =
+    "Starting the browser translator…";
+
   try {
     const result = await translateText({
       text: inputText.value.trim(),
       direction: direction.value,
-      dialect: selectedDialect.value
+      dialect: selectedDialect.value,
+      onStatus: ({
+        message,
+        progress
+      }) => {
+        statusMessage.value =
+          message || "Working…";
+
+        downloadProgress.value =
+          Number.isFinite(progress)
+            ? progress
+            : null;
+      }
     });
 
     outputText.value = result.translation;
@@ -227,6 +248,8 @@ async function handleTranslate() {
       error.message || "Translation failed.";
   } finally {
     isTranslating.value = false;
+    statusMessage.value = "";
+    downloadProgress.value = null;
   }
 }
 </script>
@@ -395,14 +418,26 @@ async function handleTranslate() {
         </p>
 
         <p
-          v-else-if="!isEnglishToBikol"
+          v-else
           id="support-note"
           class="support-note"
-          role="status"
         >
-          Bikol Partido to English is currently
-          available for prototype samples. Full
-          reverse-model support will be added later.
+          The first translation in each direction
+          downloads approximately 100 MB. The model is
+          then cached by your browser for faster reuse.
+        </p>
+
+        <p
+          v-if="isTranslating && statusMessage"
+          class="support-note"
+          role="status"
+          aria-live="polite"
+        >
+          {{ statusMessage }}
+
+          <span v-if="downloadProgress !== null">
+            ({{ downloadProgress }}%)
+          </span>
         </p>
 
         <div class="translator-body">
@@ -423,6 +458,7 @@ async function handleTranslate() {
           <button
             class="swap-button"
             type="button"
+            :disabled="isTranslating"
             :aria-label="
               `Switch to ${targetLanguage} to ${sourceLanguage}`
             "

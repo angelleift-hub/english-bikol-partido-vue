@@ -1,23 +1,28 @@
-const apiBaseUrl = (import.meta.env.VITE_TRANSLATION_API_URL || "").replace(
-  /\/$/,
-  "",
-);
-
 const englishToBikolSamples = {
   hello: "hello",
   "i work": "nagtrabaho ako",
   "call me": "apodan mo ako",
   "come here": "dumigdi ka",
-  "i need to clean my room": "kaipuhan ko maglinig nin kwarto",
-  "fix the table so we can eat": "i-ayos mo an lamesa para makakakan",
+  "i need to clean my room":
+    "kaipuhan ko maglinig nin kwarto",
+  "fix the table so we can eat":
+    "i-ayos mo an lamesa para makakakan",
 };
 
-const bikolToEnglishSamples = Object.fromEntries(
-  Object.entries(englishToBikolSamples).map(([english, bikol]) => [
-    bikol,
-    english,
-  ]),
-);
+const bikolToEnglishSamples =
+  Object.fromEntries(
+    Object.entries(
+      englishToBikolSamples,
+    ).map(([english, bikol]) => [
+      bikol,
+      english,
+    ]),
+  );
+
+let browserWorker = null;
+let nextRequestId = 0;
+
+const pendingRequests = new Map();
 
 function normalizeText(text) {
   return text
@@ -29,59 +34,189 @@ function normalizeText(text) {
     .trim();
 }
 
-function getPrototypeTranslation(text, direction) {
+function getValidatedTranslation(
+  text,
+  direction,
+) {
   const normalizedText = normalizeText(text);
+
   const samples =
     direction === "en-bikol"
       ? englishToBikolSamples
       : bikolToEnglishSamples;
-  const translation = samples[normalizedText];
 
-  if (!translation) {
-    throw new Error(
-      "The translation API is not connected yet. Try one of the sample phrases or connect the Python backend.",
-    );
-  }
+  const translation =
+    samples[normalizedText];
+
+  if (!translation) return null;
 
   return {
     translation,
-    source: "prototype_demo",
+    source: "validated_translation_memory",
     review_recommended: false,
     alternatives: [],
   };
 }
 
-export async function translateText({ text, direction, dialect }) {
-  if (!apiBaseUrl) {
-    return getPrototypeTranslation(text, direction);
+function rejectPendingRequests(message) {
+  for (const request of pendingRequests.values()) {
+    request.reject(new Error(message));
   }
 
-  const response = await fetch(`${apiBaseUrl}/translate`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      text,
-      direction,
-      dialect,
-    }),
-  });
+  pendingRequests.clear();
+}
 
-  if (!response.ok) {
-    const errorPayload = await response.json().catch(() => ({}));
+function handleWorkerMessage(event) {
+  const {
+    requestId,
+    type,
+    message,
+    progress,
+    result,
+  } = event.data;
+
+  const request =
+    pendingRequests.get(requestId);
+
+  if (!request) return;
+
+  if (type === "status") {
+    request.onStatus?.({
+      message,
+      progress,
+    });
+
+    return;
+  }
+
+  pendingRequests.delete(requestId);
+
+  if (type === "result") {
+    request.resolve(result);
+    return;
+  }
+
+  if (type === "error") {
+    request.reject(
+      new Error(
+        message ||
+          "Browser translation failed.",
+      ),
+    );
+  }
+}
+
+function getBrowserWorker() {
+  if (browserWorker) {
+    return browserWorker;
+  }
+
+  browserWorker = new Worker(
+    new URL(
+      "../workers/translation.worker.js",
+      import.meta.url,
+    ),
+    {
+      type: "module",
+    },
+  );
+
+  browserWorker.addEventListener(
+    "message",
+    handleWorkerMessage,
+  );
+
+  browserWorker.addEventListener(
+    "error",
+    (event) => {
+      const message =
+        event.message ||
+        "The browser translation worker stopped unexpectedly.";
+
+      rejectPendingRequests(message);
+
+      browserWorker?.terminate();
+      browserWorker = null;
+    },
+  );
+
+  return browserWorker;
+}
+
+function translateWithBrowserModel({
+  text,
+  direction,
+  onStatus,
+}) {
+  const worker = getBrowserWorker();
+  const requestId = ++nextRequestId;
+
+  return new Promise(
+    (resolve, reject) => {
+      pendingRequests.set(requestId, {
+        resolve,
+        reject,
+        onStatus,
+      });
+
+      worker.postMessage({
+        requestId,
+        type: "translate",
+        text,
+        direction,
+      });
+    },
+  );
+}
+
+export async function translateText({
+  text,
+  direction,
+  dialect,
+  onStatus,
+}) {
+  const trimmedText = text.trim();
+
+  if (!trimmedText) {
     throw new Error(
-      errorPayload.detail ||
-        errorPayload.message ||
-        "The translation service could not complete the request.",
+      "Please enter text to translate.",
     );
   }
 
-  const result = await response.json();
-
-  if (!result.translation) {
-    throw new Error("The translation service returned an empty result.");
+  if (dialect !== "partido") {
+    throw new Error(
+      "Only Bikol Partido is currently supported.",
+    );
   }
 
-  return result;
+  if (
+    direction !== "en-bikol" &&
+    direction !== "bikol-en"
+  ) {
+    throw new Error(
+      "Unsupported translation direction.",
+    );
+  }
+
+  const validatedTranslation =
+    getValidatedTranslation(
+      trimmedText,
+      direction,
+    );
+
+  if (validatedTranslation) {
+    onStatus?.({
+      message:
+        "Validated translation found.",
+      progress: 100,
+    });
+
+    return validatedTranslation;
+  }
+
+  return translateWithBrowserModel({
+    text: trimmedText,
+    direction,
+    onStatus,
+  });
 }
