@@ -1,3 +1,5 @@
+import TranslationWorker from "../workers/translation.worker.js?worker";
+
 const englishToBikolSamples = {
   hello: "hello",
   "i work": "nagtrabaho ako",
@@ -59,7 +61,10 @@ function getValidatedTranslation(
 }
 
 function rejectPendingRequests(message) {
-  for (const request of pendingRequests.values()) {
+  for (
+    const request
+    of pendingRequests.values()
+  ) {
     request.reject(new Error(message));
   }
 
@@ -111,15 +116,8 @@ function getBrowserWorker() {
     return browserWorker;
   }
 
-  browserWorker = new Worker(
-    new URL(
-      "../workers/translation.worker.js",
-      import.meta.url,
-    ),
-    {
-      type: "module",
-    },
-  );
+  browserWorker =
+    new TranslationWorker();
 
   browserWorker.addEventListener(
     "message",
